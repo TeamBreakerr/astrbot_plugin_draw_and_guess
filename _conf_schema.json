@@ -1,0 +1,56 @@
+{
+  "llm_provider_id": {
+    "description": "用于出题的 LLM Provider ID",
+    "type": "string",
+    "hint": "留空使用 AstrBot 当前全局 Provider；填写时使用 AstrBot WebUI 中 Provider 的 id",
+    "default": ""
+  },
+  "min_players": {
+    "description": "开始游戏所需最少玩家数",
+    "type": "int",
+    "hint": "至少 2 人",
+    "default": 2
+  },
+  "max_players": {
+    "description": "房间最大玩家数",
+    "type": "int",
+    "hint": "建议 2 - 12",
+    "default": 8
+  },
+  "draw_timeout": {
+    "description": "作画阶段超时（秒）",
+    "type": "int",
+    "hint": "作画者收到题目后，未在此时间内提交画作则自动跳过该轮",
+    "default": 300
+  },
+  "guess_timeout": {
+    "description": "竞猜阶段超时（秒）",
+    "type": "int",
+    "hint": "图片公布后，未有人答对则在此时间后自动公布答案并进入下一轮",
+    "default": 180
+  },
+  "score_correct": {
+    "description": "猜中得分",
+    "type": "int",
+    "hint": "答对者获得的分数",
+    "default": 2
+  },
+  "score_drawer": {
+    "description": "作画者得分",
+    "type": "int",
+    "hint": "本轮有人猜中时作画者获得的分数",
+    "default": 1
+  },
+  "answer_min_len": {
+    "description": "LLM 题目最少字数",
+    "type": "int",
+    "hint": "用于约束 LLM 出题",
+    "default": 2
+  },
+  "answer_max_len": {
+    "description": "LLM 题目最多字数",
+    "type": "int",
+    "hint": "用于约束 LLM 出题",
+    "default": 6
+  }
+}

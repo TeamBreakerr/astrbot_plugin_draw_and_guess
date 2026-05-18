@@ -1,0 +1,24 @@
+name: astrbot_plugin_draw_and_guess
+desc: 你画我猜（Draw & Guess）竞猜模式：群聊创建房间、LLM 出题、私聊发题给作画者、群内提交画作、激活竞猜、生成图片排行榜
+help: |
+  指令一览（默认前缀按 AstrBot 配置，下面以 / 表示）：
+    /draw_create         在当前群创建房间，创建者自动加入
+    /draw_join           加入当前群的房间（仅大厅阶段）
+    /draw_leave          退出房间
+    /draw_list           查看房间状态和成员
+    /draw_disband        房主解散房间（仅大厅阶段）
+    /draw_start <领域>   房主开始游戏，领域用于 LLM 出题；如 /draw_start 动物
+    /draw_submit         作画者提交画作（须随消息附上一张图）
+    /draw_skip           作画者跳过本轮（不得分）
+    /draw_status         查看当前游戏状态
+    /draw_help           显示游戏玩法和全部指令
+  游戏流程：
+    1. 创建房间 → 加入 → 房主输入领域开始游戏；
+    2. 系统随机分配作画顺序，每人各作画一次；
+    3. 题目通过私聊发给作画者，群里公布答案字数；
+    4. 作画者提交图片后进入竞猜阶段；
+    5. 第一个完全匹配答案的玩家获得 2 分，作画者获得 1 分；
+    6. 全部回合结束后生成最终排行榜图片。
+version: 1.0.0
+author: TeamBreaker
+repo:
