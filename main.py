@@ -6,7 +6,7 @@
   3. 房主 `/draw_start <领域>` 开始游戏；
   4. 系统随机分配每个人作画一次的顺序；
   5. 题目由 LLM 生成，私聊发给当前作画者，群里只公布字数；
-  6. 作画者 `/draw_submit` 并随消息附上一张图片，进入竞猜状态；
+  6. 作画者用 `/draw_submit` 提交画作（同条消息附图 / 引用回复图 / 先发图后提交），进入竞猜状态；
   7. 此时插件激活，捕捉群内所有玩家的发言，第一条 *完全匹配* 答案者得分；
   8. 全部回合结束后渲染图片排行榜，游戏结束。
 """
@@ -64,6 +64,8 @@ class Room:
     timeout_task: asyncio.Task | None = None
     created_at: float = field(default_factory=time.time)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # 作画阶段记录每个玩家最近发送的一张图片，供 /draw_submit 自动取图
+    last_images: dict[str, "Comp.Image"] = field(default_factory=dict)
 
     @property
     def current_drawer_id(self) -> str:
@@ -89,11 +91,24 @@ def qq_avatar_url(user_id: str, size: int = 640) -> str:
     return f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s={size}"
 
 
-def _extract_image_component(event: AstrMessageEvent) -> Comp.Image | None:
-    comps = getattr(event.message_obj, "message", []) or []
-    for c in comps:
+def _first_image(comps: list) -> Comp.Image | None:
+    for c in comps or []:
         if isinstance(c, Comp.Image):
             return c
+    return None
+
+
+def _extract_image_component(event: AstrMessageEvent) -> Comp.Image | None:
+    """取当前消息内直接附带的图片。"""
+    return _first_image(getattr(event.message_obj, "message", []) or [])
+
+
+def _extract_reply_image(event: AstrMessageEvent) -> Comp.Image | None:
+    """取当前消息所引用（回复）的那条消息里的图片。"""
+    comps = getattr(event.message_obj, "message", []) or []
+    for c in comps:
+        if isinstance(c, Comp.Reply):
+            return _first_image(getattr(c, "chain", None) or [])
     return None
 
 
@@ -228,55 +243,59 @@ class DrawAndGuessPlugin(Star):
     # --------------- 状态转换 ---------------
 
     async def _begin_round(self, room: Room) -> None:
-        """开始当前 round_index 对应玩家的作画轮。"""
-        drawer_id = room.current_drawer_id
-        if not drawer_id:
-            await self._finish_game(room)
-            return
-        drawer = room.players.get(drawer_id)
-        if drawer is None:
-            # 作画者中途退出 → 跳过
-            room.round_index += 1
-            await self._begin_round(room)
-            return
+        """推进到下一个有效作画轮，跳过已退出的玩家、出题失败或私聊不可达的轮次。"""
+        # 新一轮开始，清空上一轮残留的图片记录
+        room.last_images.clear()
 
-        # 出题
-        topic = await self._generate_topic(room.domain)
-        if not topic:
-            await self._send_group(room, [Comp.Plain("❌ LLM 出题失败，本轮跳过。")])
-            room.round_index += 1
-            await self._begin_round(room)
-            return
+        # 循环寻找一个合法作画者并成功出题、成功私聊（避免自递归）
+        while True:
+            drawer_id = room.current_drawer_id
+            if not drawer_id:
+                await self._finish_game(room)
+                return
+            drawer = room.players.get(drawer_id)
+            if drawer is None:
+                # 作画者中途退出 → 跳过
+                room.round_index += 1
+                continue
 
-        room.current_answer = topic
-        room.normalized_answer = normalize_answer(topic)
-        room.state = RoomState.DRAWING
+            # 出题
+            topic = await self._generate_topic(room.domain)
+            if not topic:
+                await self._send_group(room, [Comp.Plain("❌ LLM 出题失败，本轮跳过。")])
+                room.round_index += 1
+                continue
 
-        # 私聊作画者
-        private_ok = await self._send_private(
-            room,
-            drawer_id,
-            f"🎨 你画我猜 · 第 {room.round_index + 1}/{len(room.order)} 轮\n"
-            f"群: {room.group_id} · 领域: {room.domain}\n"
-            f"你的题目是：【{topic}】\n"
-            f"请在 {self.draw_timeout} 秒内回到群里发送 /draw_submit 并附上一张作画图片；\n"
-            f"或发送 /draw_skip 跳过本轮（不得分）。\n"
-            "⚠️ 不要把题目透露给其他玩家！"
-        )
-        if not private_ok:
-            await self._send_group(
+            room.current_answer = topic
+            room.normalized_answer = normalize_answer(topic)
+            room.state = RoomState.DRAWING
+
+            # 私聊作画者
+            private_ok = await self._send_private(
                 room,
-                [
-                    Comp.At(qq=drawer_id),
-                    Comp.Plain(
-                        " 私聊不可达。请先加机器人为好友后再试。"
-                        "本轮已自动跳过。"
-                    ),
-                ],
+                drawer_id,
+                f"🎨 你画我猜 · 第 {room.round_index + 1}/{len(room.order)} 轮\n"
+                f"群: {room.group_id} · 领域: {room.domain}\n"
+                f"你的题目是：【{topic}】\n"
+                f"请在 {self.draw_timeout} 秒内回到群里发送 /draw_submit 提交作画图片；\n"
+                f"或发送 /draw_skip 跳过本轮（不得分）。\n"
+                "⚠️ 不要把题目透露给其他玩家！"
             )
-            room.round_index += 1
-            await self._begin_round(room)
-            return
+            if not private_ok:
+                await self._send_group(
+                    room,
+                    [
+                        Comp.At(qq=drawer_id),
+                        Comp.Plain(
+                            " 私聊不可达。请先加机器人为好友后再试。"
+                            "本轮已自动跳过。"
+                        ),
+                    ],
+                )
+                room.round_index += 1
+                continue
+
+            break
 
         # 群内宣布
         await self._send_group(
@@ -288,7 +307,7 @@ class DrawAndGuessPlugin(Star):
                     f"（{drawer.name}）\n"
                     f"领域：{room.domain}\n"
                     f"答案共 {len(room.current_answer)} 个字\n"
-                    f"请作画者私聊查收题目，并在 {self.draw_timeout} 秒内于群内 /draw_submit 提交画作。"
+                    f"请作画者私聊查收题目，并在 {self.draw_timeout} 秒内于群内提交画作。"
                 ),
             ],
         )
@@ -301,7 +320,12 @@ class DrawAndGuessPlugin(Star):
             await self._send_group(
                 room,
                 [
-                    Comp.Plain("🖼️ 白板已就绪，长按本图 → 编辑 → 涂鸦，画完后回到群里 /draw_submit 并附上作画图："),
+                    Comp.Plain(
+                        "🖼️ 白板已就绪，长按本图 → 编辑 → 涂鸦。画完后提交方式（任选其一）：\n"
+                        "① /draw_submit 同条消息附上作画图\n"
+                        "② 引用回复作画图，再发送 /draw_submit\n"
+                        "③ 先发送作画图，再单独发送 /draw_submit（自动取你最近的一张图）"
+                    ),
                     Comp.Image.fromBytes(wb_bytes),
                 ],
             )
@@ -460,12 +484,11 @@ class DrawAndGuessPlugin(Star):
             yield event.plain_result(f"👋 {name} 退出。当前 {len(room.players)}/{self.max_players} 人。")
             return
 
-        # 游戏中：把玩家移出，分数清零；若是当前作画者，则本轮跳过
+        # 游戏中：把玩家移出。order 列表保持不变以维持轮次稳定，
+        # 轮到已退出的玩家时 _begin_round 会因 players 中查不到而自动跳过。
         async with room.lock:
             player = room.players.pop(uid, None)
-            if uid in room.order:
-                # 不动 order 列表，保持轮次稳定；仅作画时识别"玩家已退出"再跳过
-                pass
+            room.last_images.pop(uid, None)
             yield event.plain_result(f"👋 {player.name if player else uid} 中途退出。")
             if uid == room.current_drawer_id and room.state in (RoomState.DRAWING, RoomState.GUESSING):
                 self._cancel_timeout(room)
@@ -524,7 +547,9 @@ class DrawAndGuessPlugin(Star):
             "   · 题目通过【私聊】发给当前作画者（请确保 bot 已加为好友）；\n"
             "   · 群里宣布作画者、领域、答案字数（不公布答案）；\n"
             "   · 机器人发一张 1080×1920 手机比例白板，可长按 → 编辑 → 涂鸦使用 QQ 画笔；\n"
-            "   · 作画者在群里发 /draw_submit 并随消息附 1 张作画图片；\n"
+            "   · 作画者用 /draw_submit 提交画作，取图方式三选一：\n"
+            "     ① 同条消息附图；② 引用回复一张图再发 /draw_submit；\n"
+            "     ③ 先发图、再单独发 /draw_submit（自动取最近一张图）；\n"
             "   · 提交后竞猜激活，机器人开始监听群消息；\n"
             f"   · 第一个【完全匹配】答案的玩家获得 {self.score_correct} 分，"
             f"作画者获得 {self.score_drawer} 分；\n"
@@ -537,7 +562,7 @@ class DrawAndGuessPlugin(Star):
             "  /draw_list                 查看房间状态和成员\n"
             "  /draw_disband              房主解散房间\n"
             "  /draw_start <领域>         房主开始游戏，输入领域\n"
-            "  /draw_submit               作画者提交画作（须随消息附图）\n"
+            "  /draw_submit               作画者提交画作（附图/引用回复图/先发图后提交）\n"
             "  /draw_skip                 作画者/房主跳过本轮（不得分）\n"
             "  /draw_status               查看当前游戏进度\n"
             "  /draw_help                 显示这段帮助\n"
@@ -626,24 +651,40 @@ class DrawAndGuessPlugin(Star):
         if uid != room.current_drawer_id:
             yield event.plain_result("⚠️ 只有当前作画者可以提交。")
             return
-        img = _extract_image_component(event)
+        # 三种取图方式（按优先级）：
+        # ① /draw_submit 同条消息附图
+        # ② 引用回复一张图片再发 /draw_submit
+        # ③ 先发图片，再单独发 /draw_submit —— 自动取该玩家最近一张图
+        img = (
+            _extract_image_component(event)
+            or _extract_reply_image(event)
+            or room.last_images.get(uid)
+        )
         if img is None:
-            yield event.plain_result("⚠️ 请在 /draw_submit 命令同一条消息中附上一张图片。")
+            yield event.plain_result(
+                "⚠️ 没有找到作画图片，可三选一：\n"
+                "① /draw_submit 同条消息附上图片\n"
+                "② 引用回复一张图片，再发送 /draw_submit\n"
+                "③ 先发送图片，再单独发送 /draw_submit"
+            )
             return
 
         async with room.lock:
-            if room.state != RoomState.DRAWING:
+            if room.state != RoomState.DRAWING or uid != room.current_drawer_id:
                 return
             self._cancel_timeout(room)
             room.state = RoomState.GUESSING
             room.round_deadline = time.time() + self.guess_timeout
             room.timeout_task = asyncio.create_task(self._guess_timeout_watcher(room))
+            room.last_images.clear()
 
+            # 转发作画图，让全群明确看到要猜的内容（best-effort，独立发送）
+            await self._send_group(room, [Comp.Plain("🖼️ 画作已提交！"), img])
             await self._send_group(
                 room,
                 [
                     Comp.Plain(
-                        f"🖼️ 画作已提交！开始竞猜，第一个完全匹配答案的玩家获胜。\n"
+                        f"开始竞猜！第一个完全匹配答案的玩家获胜。\n"
                         f"答案共 {len(room.current_answer)} 个字 · 时限 {self.guess_timeout} 秒\n"
                         "直接在群里发言即可（无需 @ 机器人）。"
                     ),
@@ -695,16 +736,26 @@ class DrawAndGuessPlugin(Star):
             bits.append(f"剩余 {remaining} 秒")
         yield event.plain_result(" · ".join(bits))
 
-    # ------------------------- 竞猜捕捉 -------------------------
+    # ------------------------- 群消息监听 -------------------------
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=50)
     async def on_group_message(self, event: AstrMessageEvent):
-        """在 GUESSING 状态下识别玩家发言并匹配答案。"""
+        """作画阶段记录玩家图片；竞猜阶段识别发言并匹配答案。"""
         room = self._get_room(event)
-        if room is None or room.state != RoomState.GUESSING:
+        if room is None:
             return
         uid = str(event.get_sender_id())
         if uid not in room.players:
+            return
+
+        # 作画阶段：记录玩家最近发送的图片，供 /draw_submit 自动取图
+        if room.state == RoomState.DRAWING:
+            img = _extract_image_component(event) or _extract_reply_image(event)
+            if img is not None:
+                room.last_images[uid] = img
+            return
+
+        if room.state != RoomState.GUESSING:
             return
         if uid == room.current_drawer_id:
             return  # 作画者不参与猜测

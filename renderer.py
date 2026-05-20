@@ -9,15 +9,12 @@ from dataclasses import dataclass
 import aiohttp
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-# 优先使用插件目录内可能存在的字体；其次复用同宿主上其它插件已带的 CJK 字体；
-# 最后回退 PIL 默认字体（中文会变成方框，但不会崩溃）。
+# 优先使用插件自带字体（font.otf/font.ttf，随插件一起打包，跨平台稳定）；
+# 其次系统 CJK 字体；最后回退 PIL 默认字体（中文会变方框，但不会崩溃）。
 _HERE = os.path.dirname(__file__)
-_PLUGINS_ROOT = os.path.dirname(_HERE)
 _FONT_CANDIDATES = [
     os.path.join(_HERE, "font.otf"),
     os.path.join(_HERE, "font.ttf"),
-    os.path.join(_PLUGINS_ROOT, "astrbot_plugin_help", "DouyinSansBold.otf"),
-    os.path.join(_PLUGINS_ROOT, "astrbot_plugin_music", "fonts", "simhei.ttf"),
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
@@ -131,7 +128,7 @@ def _circle_avatar(raw: bytes | None, size: int) -> Image.Image:
         im = None
     if im is None:
         im = Image.new("RGBA", (size, size), (200, 200, 200, 255))
-    im = im.resize((size, size), Image.LANCZOS)
+    im = im.resize((size, size), Image.Resampling.LANCZOS)
 
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
