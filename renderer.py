@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import io
-import logging
 import os
 from dataclasses import dataclass
 
 import aiohttp
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-_log = logging.getLogger("astrbot_plugin_draw_and_guess.renderer")
+from astrbot.api import logger
 
 # 优先使用插件自带字体（font.otf/font.ttf，随插件一起打包，跨平台稳定）；
 # 其次系统 CJK 字体；最后回退 PIL 默认字体（中文会变方框，但不会崩溃）。
@@ -48,7 +47,7 @@ def _load_font(size: int) -> ImageFont.ImageFont:
     global _font_fallback_warned
     if not _font_fallback_warned:
         _font_fallback_warned = True
-        _log.warning(
+        logger.warning(
             "draw_and_guess: 未找到可用的 CJK 字体（插件自带 font.otf 缺失？），"
             "已回退 PIL 默认字体，渲染图片中的中文将显示异常。"
         )

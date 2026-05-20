@@ -145,11 +145,23 @@ class DrawAndGuessPlugin(Star):
         self.score_drawer = int(self.config.get("score_drawer", 1))
         self.answer_min_len = max(1, int(self.config.get("answer_min_len", 2)))
         self.answer_max_len = max(self.answer_min_len, int(self.config.get("answer_max_len", 6)))
+        # 持有后台任务的强引用，避免 asyncio.create_task 的结果被 GC 提前回收
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    def _spawn(self, coro) -> None:
+        """启动后台任务并持有强引用，任务结束后自动从集合移除。"""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     async def terminate(self) -> None:
         for room in list(self.rooms.values()):
             if room.timeout_task and not room.timeout_task.done():
                 room.timeout_task.cancel()
+        for task in list(self._bg_tasks):
+            if not task.done():
+                task.cancel()
+        self._bg_tasks.clear()
         self.rooms.clear()
 
     # --------------- 房间 / 玩家辅助 ---------------
@@ -660,8 +672,8 @@ class DrawAndGuessPlugin(Star):
         yield event.plain_result(
             f"🚀 游戏开始！\n领域：{domain}\n作画顺序：{order_names}\n马上为第一位作画者出题…"
         )
-        # 开始第一轮（异步）
-        asyncio.create_task(self._begin_round_with_lock(room))
+        # 开始第一轮（异步，持有强引用避免被 GC 回收）
+        self._spawn(self._begin_round_with_lock(room))
 
     async def _begin_round_with_lock(self, room: Room) -> None:
         async with room.lock:
