@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import os
 from dataclasses import dataclass
 
 import aiohttp
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+_log = logging.getLogger("astrbot_plugin_draw_and_guess.renderer")
 
 # 优先使用插件自带字体（font.otf/font.ttf，随插件一起打包，跨平台稳定）；
 # 其次系统 CJK 字体；最后回退 PIL 默认字体（中文会变方框，但不会崩溃）。
@@ -30,6 +33,9 @@ def _resolve_font_path() -> str | None:
     return None
 
 
+_font_fallback_warned = False
+
+
 def _load_font(size: int) -> ImageFont.ImageFont:
     p = _resolve_font_path()
     if p:
@@ -37,6 +43,15 @@ def _load_font(size: int) -> ImageFont.ImageFont:
             return ImageFont.truetype(p, size)
         except Exception:
             pass
+    # 兜底：PIL 默认位图字体不支持中文也不支持缩放，仅避免崩溃。正常情况下
+    # 不应走到这里（插件自带 font.otf）。只告警一次，提示管理员检查字体。
+    global _font_fallback_warned
+    if not _font_fallback_warned:
+        _font_fallback_warned = True
+        _log.warning(
+            "draw_and_guess: 未找到可用的 CJK 字体（插件自带 font.otf 缺失？），"
+            "已回退 PIL 默认字体，渲染图片中的中文将显示异常。"
+        )
     return ImageFont.load_default()
 
 
@@ -189,7 +204,7 @@ async def render_scoreboard(
             return_exceptions=False,
         )
     return await asyncio.to_thread(
-        _compose_scoreboard, title, subtitle, rows, list(avatar_bytes_list)
+        _compose_scoreboard, title, subtitle, rows, avatar_bytes_list
     )
 
 

@@ -166,9 +166,13 @@ class DrawAndGuessPlugin(Star):
         return Player(user_id=uid, name=name, avatar_url=qq_avatar_url(uid))
 
     def _cancel_timeout(self, room: Room) -> None:
-        if room.timeout_task and not room.timeout_task.done():
-            room.timeout_task.cancel()
+        t = room.timeout_task
         room.timeout_task = None
+        # 不取消「正在执行当前调用链」的超时任务：超时 watcher 触发后会调用
+        # _begin_round → _cancel_timeout，此时该 watcher 就是 room.timeout_task
+        # 本身，取消它等于给自己抛 CancelledError，会打断 _begin_round。
+        if t is not None and not t.done() and t is not asyncio.current_task():
+            t.cancel()
 
     async def _send_group(self, room: Room, chain: list) -> None:
         try:
@@ -219,26 +223,30 @@ class DrawAndGuessPlugin(Star):
             "4. 不要使用标点、括号、引号、英文或解释；\n"
             "5. 只输出题目本身，不要任何前缀、后缀、引言或解释。"
         )
-        try:
-            resp = await provider.text_chat(
-                prompt=prompt,
-                session_id=f"draw_and_guess:{int(time.time() * 1000)}",
-            )
-        except Exception:
-            logger.exception("draw_and_guess: LLM 调用异常")
-            return None
-        text = (getattr(resp, "completion_text", None) or "").strip()
-        # 取第一行，去除常见包裹符号
-        line = text.splitlines()[0].strip() if text else ""
-        line = line.strip("「」“”\"'`*《》()（）[]【】 \t")
-        # 移除空白
-        line = re.sub(r"\s+", "", line)
-        if not line:
-            return None
-        # 字数校验：超过限制则截断；过短则放行（让游戏继续，避免反复重试）
-        if len(line) > self.answer_max_len * 2:
-            line = line[: self.answer_max_len * 2]
-        return line
+        # 出题对游戏推进至关重要，遇到瞬时错误/空结果重试几次，
+        # 避免因一次抖动就跳过某玩家的作画回合
+        for attempt in range(3):
+            try:
+                resp = await provider.text_chat(
+                    prompt=prompt,
+                    session_id=f"draw_and_guess:{int(time.time() * 1000)}",
+                )
+            except Exception:
+                logger.exception("draw_and_guess: LLM 调用异常（第 %d 次）", attempt + 1)
+                continue
+            text = (getattr(resp, "completion_text", None) or "").strip()
+            # 取第一行，去除常见包裹符号与空白
+            line = text.splitlines()[0].strip() if text else ""
+            line = line.strip("「」“”\"'`*《》()（）[]【】 \t")
+            line = re.sub(r"\s+", "", line)
+            if not line:
+                continue
+            # 字数校验：超过限制则截断
+            if len(line) > self.answer_max_len * 2:
+                line = line[: self.answer_max_len * 2]
+            return line
+        logger.warning("draw_and_guess: LLM 连续 3 次出题失败")
+        return None
 
     # --------------- 状态转换 ---------------
 
@@ -804,8 +812,8 @@ class DrawAndGuessPlugin(Star):
             # 阻止其他插件继续处理该条消息（例如 LLM 自动回复）
             try:
                 event.stop_event()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("draw_and_guess: stop_event 当前平台不支持: %s", e)
             await self._send_group(
                 room,
                 [
