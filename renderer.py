@@ -1,4 +1,4 @@
-"""排行榜图片渲染。所有 PIL 操作都封装在这里。"""
+"""图片渲染：手机白板 + 最终排行榜。所有 PIL 操作都封装在这里。"""
 from __future__ import annotations
 
 import asyncio
@@ -41,6 +41,63 @@ def _load_font(size: int) -> ImageFont.ImageFont:
         except Exception:
             pass
     return ImageFont.load_default()
+
+
+def render_whiteboard(
+    label: str = "",
+    width: int = 1080,
+    height: int = 1920,
+    dot_spacing: int = 90,
+) -> bytes:
+    """生成手机比例（9:16）的白板 PNG。
+
+    点阵作为绘图参考，颜色极浅以免干扰最终图像；右上角标签提示当前轮次。
+    返回 PNG 字节流。
+    """
+    img = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    # 极浅的圆点网格作为绘画参考
+    dot_color = (228, 232, 240)
+    r = 2
+    for y in range(dot_spacing, height, dot_spacing):
+        for x in range(dot_spacing, width, dot_spacing):
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=dot_color)
+
+    # 极细外框，避免 QQ 自动裁边/压缩误判图像内容
+    border_color = (220, 225, 235)
+    draw.rectangle((0, 0, width - 1, height - 1), outline=border_color, width=2)
+
+    # 角标
+    if label:
+        font = _load_font(34)
+        pad_x, pad_y = 28, 22
+        tw = draw.textlength(label, font=font)
+        # 右上角浅色描边胶囊
+        bbox = (
+            width - pad_x - tw - 18,
+            pad_y - 6,
+            width - pad_x + 6,
+            pad_y + 44,
+        )
+        draw.rounded_rectangle(bbox, radius=16, fill=(245, 247, 252), outline=border_color, width=1)
+        draw.text(
+            (width - pad_x - tw + 0, pad_y),
+            label,
+            font=font,
+            fill=(140, 150, 170),
+        )
+
+    # 左下角小提示
+    hint_font = _load_font(26)
+    hint = "长按本图 → 编辑 → 涂鸦 → 完成后回复 /draw_submit"
+    hw = draw.textlength(hint, font=hint_font)
+    if hw < width - 60:
+        draw.text((30, height - 60), hint, font=hint_font, fill=(180, 188, 205))
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
 
 
 @dataclass

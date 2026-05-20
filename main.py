@@ -26,7 +26,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.platform import MessageType as PlatformMessageType
 from astrbot.core.platform.message_session import MessageSession
 
-from .renderer import RankRow, render_scoreboard
+from .renderer import RankRow, render_scoreboard, render_whiteboard
 
 
 # ------------------------- 数据模型 -------------------------
@@ -293,6 +293,21 @@ class DrawAndGuessPlugin(Star):
             ],
         )
 
+        # 发一张手机比例白板，方便长按 → 编辑 → 涂鸦
+        try:
+            wb_bytes = render_whiteboard(
+                label=f"第 {room.round_index + 1}/{len(room.order)} 轮 · {room.domain}",
+            )
+            await self._send_group(
+                room,
+                [
+                    Comp.Plain("🖼️ 白板已就绪，长按本图 → 编辑 → 涂鸦，画完后回到群里 /draw_submit 并附上作画图："),
+                    Comp.Image.fromBytes(wb_bytes),
+                ],
+            )
+        except Exception:
+            logger.exception("draw_and_guess: 渲染/发送白板失败")
+
         # 启动作画超时
         room.round_deadline = time.time() + self.draw_timeout
         self._cancel_timeout(room)
@@ -507,6 +522,7 @@ class DrawAndGuessPlugin(Star):
             "   · LLM 根据领域生成一个题目；\n"
             "   · 题目通过【私聊】发给当前作画者（请确保 bot 已加为好友）；\n"
             "   · 群里宣布作画者、领域、答案字数（不公布答案）；\n"
+            "   · 机器人发一张 1080×1920 手机比例白板，可长按 → 编辑 → 涂鸦使用 QQ 画笔；\n"
             "   · 作画者在群里发 /draw_submit 并随消息附 1 张作画图片；\n"
             "   · 提交后竞猜激活，机器人开始监听群消息；\n"
             f"   · 第一个【完全匹配】答案的玩家获得 {self.score_correct} 分，"
