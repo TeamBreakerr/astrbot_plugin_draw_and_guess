@@ -442,6 +442,7 @@ class DrawAndGuessPlugin(Star):
             return
         room = self._get_room(event)
         if room is None:
+            yield event.plain_result("❌ 本群没有进行中的房间。使用 /draw_create 创建。")
             return
         uid = str(event.get_sender_id())
         if uid not in room.players:
@@ -481,7 +482,7 @@ class DrawAndGuessPlugin(Star):
             return
         room = self._get_room(event)
         if room is None:
-            yield event.plain_result("❌ 本群没有房间。/draw_create 创建。")
+            yield event.plain_result("❌ 本群没有进行中的房间。使用 /draw_create 创建。")
             return
         owner = room.players.get(room.owner_id)
         lines = [
@@ -558,6 +559,7 @@ class DrawAndGuessPlugin(Star):
             return
         room = self._get_room(event)
         if room is None:
+            yield event.plain_result("❌ 本群没有进行中的房间。使用 /draw_create 创建。")
             return
         uid = str(event.get_sender_id())
         if uid != room.owner_id:
@@ -573,7 +575,7 @@ class DrawAndGuessPlugin(Star):
             return
         room = self._get_room(event)
         if room is None:
-            yield event.plain_result("❌ 本群没有房间。/draw_create 创建。")
+            yield event.plain_result("❌ 本群没有进行中的房间。使用 /draw_create 创建。")
             return
         uid = str(event.get_sender_id())
         if uid != room.owner_id:
@@ -615,6 +617,7 @@ class DrawAndGuessPlugin(Star):
             return
         room = self._get_room(event)
         if room is None:
+            yield event.plain_result("❌ 本群没有进行中的房间。使用 /draw_create 创建。")
             return
         uid = str(event.get_sender_id())
         if room.state != RoomState.DRAWING:
@@ -653,9 +656,11 @@ class DrawAndGuessPlugin(Star):
             return
         room = self._get_room(event)
         if room is None:
+            yield event.plain_result("❌ 本群没有进行中的房间。使用 /draw_create 创建。")
             return
         uid = str(event.get_sender_id())
         if room.state not in (RoomState.DRAWING, RoomState.GUESSING):
+            yield event.plain_result("⚠️ 游戏尚未开始，没有可跳过的回合。")
             return
         if uid != room.current_drawer_id and uid != room.owner_id:
             yield event.plain_result("⚠️ 只有当前作画者或房主可跳过本轮。")
@@ -677,7 +682,7 @@ class DrawAndGuessPlugin(Star):
             return
         room = self._get_room(event)
         if room is None:
-            yield event.plain_result("❌ 本群没有房间。")
+            yield event.plain_result("❌ 本群没有进行中的房间。使用 /draw_create 创建。")
             return
         bits = [f"状态：{room.state.value}"]
         if room.state in (RoomState.DRAWING, RoomState.GUESSING) and room.order:
