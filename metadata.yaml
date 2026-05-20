@@ -1,5 +1,5 @@
 name: astrbot_plugin_draw_and_guess
-desc: 你画我猜（Draw & Guess）竞猜模式：群聊创建房间、LLM 出题、私聊发题给作画者、群内提交画作、激活竞猜、生成图片排行榜
+desc: 你画我猜竞猜模式：群内开房、LLM 出题、私聊发题给作画者、手机白板作画、激活竞猜、生成图片积分排行榜
 help: |
   指令一览（默认前缀按 AstrBot 配置，下面以 / 表示）：
     /draw_create         在当前群创建房间，创建者自动加入
