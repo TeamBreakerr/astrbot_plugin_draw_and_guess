@@ -113,7 +113,7 @@ def _looks_like_command(text: str) -> bool:
     "TeamBreaker",
     "你画我猜竞猜模式：LLM 出题 + 群内作画 + 激活竞猜 + 图片排行榜",
     "1.0.0",
-    "",
+    "https://github.com/TeamBreakerr/astrbot_plugin_draw_and_guess",
 )
 class DrawAndGuessPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
