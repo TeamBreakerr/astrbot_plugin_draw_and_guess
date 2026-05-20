@@ -66,6 +66,8 @@ class Room:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # 作画阶段记录每个玩家最近发送的一张图片，供 /draw_submit 自动取图
     last_images: dict[str, "Comp.Image"] = field(default_factory=dict)
+    # 本局已用过的题目，出题时排除以避免重复
+    used_answers: list[str] = field(default_factory=list)
 
     @property
     def current_drawer_id(self) -> str:
@@ -89,6 +91,11 @@ def normalize_answer(s: str) -> str:
 
 def qq_avatar_url(user_id: str, size: int = 640) -> str:
     return f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s={size}"
+
+
+# QQ 贴表情用的 emoji id（unicode 码点的十进制）：✅ U+2705 / ❌ U+274C
+EMOJI_CORRECT = "9989"
+EMOJI_WRONG = "10060"
 
 
 def _first_image(comps: list) -> Comp.Image | None:
@@ -192,6 +199,19 @@ class DrawAndGuessPlugin(Star):
         except Exception:
             logger.exception("draw_and_guess: 群消息发送失败 origin=%s", room.group_origin)
 
+    async def _react(self, event: AstrMessageEvent, emoji_id: str) -> None:
+        """给触发消息贴一个 QQ 表情反馈（仅 OneBot/QQ 平台有效）。失败静默忽略。"""
+        try:
+            mid = getattr(event.message_obj, "message_id", None)
+            bot = getattr(event, "bot", None)
+            if mid is None or bot is None:
+                return
+            await bot.call_action(
+                "set_msg_emoji_like", message_id=int(mid), emoji_id=emoji_id
+            )
+        except Exception as e:
+            logger.debug("draw_and_guess: 贴表情失败: %s", e)
+
     async def _send_private(self, room: Room, user_id: str, text: str) -> bool:
         try:
             session = MessageSession(
@@ -208,7 +228,9 @@ class DrawAndGuessPlugin(Star):
 
     # --------------- LLM 出题 ---------------
 
-    async def _generate_topic(self, domain: str) -> str | None:
+    async def _generate_topic(
+        self, domain: str, exclude: list[str] | None = None
+    ) -> str | None:
         provider = None
         if self.llm_provider_id:
             try:
@@ -226,37 +248,56 @@ class DrawAndGuessPlugin(Star):
             logger.warning("draw_and_guess: 没有可用的 LLM provider，无法出题")
             return None
 
-        prompt = (
-            f"你是“你画我猜”游戏的出题官。请在领域【{domain}】内为这一局生成一个题目。\n"
-            "要求：\n"
-            f"1. 必须是一个具体的、可被绘制的事物/动作/概念（普通玩家能在白板上画出来）；\n"
-            f"2. 字数（汉字数）在 {self.answer_min_len}-{self.answer_max_len} 之间；\n"
-            "3. 难度适中，不要过于冷门，但也不要太简单；\n"
-            "4. 不要使用标点、括号、引号、英文或解释；\n"
-            "5. 只输出题目本身，不要任何前缀、后缀、引言或解释。"
-        )
-        # 出题对游戏推进至关重要，遇到瞬时错误/空结果重试几次，
-        # 避免因一次抖动就跳过某玩家的作画回合
+        exclude = exclude or []
+        exclude_norm = {normalize_answer(x) for x in exclude}
+        max_chars = self.answer_max_len * 2
+
+        # 出题对游戏推进至关重要，遇到瞬时错误/空结果重试几次。
+        # 一次让 LLM 生成一批题目再随机抽取，配合随机种子与"避免雷同"指令，
+        # 显著提升多样性，避免同一领域反复出现同一个「最显然」的答案。
         for attempt in range(3):
+            nonce = random.randint(10000, 99999)
+            exclude_txt = "、".join(exclude) if exclude else "无"
+            prompt = (
+                f"你是“你画我猜”游戏的出题官。请在领域【{domain}】内一次性生成 12 个互不相同的题目。\n"
+                "要求：\n"
+                "1. 每个题目都是具体、可被绘制的事物/动作/概念（普通玩家能在白板上画出来）；\n"
+                f"2. 每个题目 {self.answer_min_len}-{self.answer_max_len} 个汉字；\n"
+                "3. 尽量发散，覆盖该领域不同细分方向，新颖有趣，避免老套和雷同；\n"
+                f"4. 不要出现这些已用过的题目：{exclude_txt}；\n"
+                "5. 不要使用标点、括号、引号、英文、序号或解释；\n"
+                "6. 每行一个题目，只输出题目本身。\n"
+                f"（随机种子 {nonce}，请据此让这一批题目尽量与众不同）"
+            )
             try:
                 resp = await provider.text_chat(
                     prompt=prompt,
-                    session_id=f"draw_and_guess:{int(time.time() * 1000)}",
+                    session_id=f"draw_and_guess:{int(time.time() * 1000)}:{nonce}",
                 )
             except Exception:
                 logger.exception("draw_and_guess: LLM 调用异常（第 %d 次）", attempt + 1)
                 continue
-            text = (getattr(resp, "completion_text", None) or "").strip()
-            # 取第一行，去除常见包裹符号与空白
-            line = text.splitlines()[0].strip() if text else ""
-            line = line.strip("「」“”\"'`*《》()（）[]【】 \t")
-            line = re.sub(r"\s+", "", line)
-            if not line:
-                continue
-            # 字数校验：超过限制则截断
-            if len(line) > self.answer_max_len * 2:
-                line = line[: self.answer_max_len * 2]
-            return line
+            text = getattr(resp, "completion_text", None) or ""
+
+            # 逐行解析为候选题目：去序号/包裹符号/空白，过滤字数与已用过的
+            seen: set[str] = set()
+            candidates: list[str] = []
+            for raw in text.splitlines():
+                s = re.sub(r"^[\s\d.、)）(（\-—*·]+", "", raw.strip())
+                s = s.strip("「」“”\"'`*《》()（）[]【】 \t")
+                s = re.sub(r"\s+", "", s)
+                if not s:
+                    continue
+                if len(s) > max_chars:
+                    s = s[:max_chars]
+                key = normalize_answer(s)
+                if not key or key in exclude_norm or key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(s)
+
+            if candidates:
+                return random.choice(candidates)
         logger.warning("draw_and_guess: LLM 连续 3 次出题失败")
         return None
 
@@ -279,8 +320,8 @@ class DrawAndGuessPlugin(Star):
                 room.round_index += 1
                 continue
 
-            # 出题
-            topic = await self._generate_topic(room.domain)
+            # 出题（排除本局已用过的题目）
+            topic = await self._generate_topic(room.domain, exclude=room.used_answers)
             if not topic:
                 await self._send_group(room, [Comp.Plain("❌ LLM 出题失败，本轮跳过。")])
                 room.round_index += 1
@@ -288,6 +329,7 @@ class DrawAndGuessPlugin(Star):
 
             room.current_answer = topic
             room.normalized_answer = normalize_answer(topic)
+            room.used_answers.append(topic)
             room.state = RoomState.DRAWING
 
             # 私聊作画者
@@ -589,7 +631,8 @@ class DrawAndGuessPlugin(Star):
             "   · 作画者用 /draw_submit 提交画作，取图方式三选一：\n"
             "     ① 同条消息附图；② 引用回复一张图再发 /draw_submit；\n"
             "     ③ 先发图、再单独发 /draw_submit（自动取最近一张图）；\n"
-            "   · 提交后竞猜激活，机器人开始监听群消息；\n"
+            "   · 提交后竞猜激活，机器人开始监听群消息，"
+            "对每条猜测贴表情反馈（✅ 猜对 / ❌ 猜错）；\n"
             f"   · 第一个【完全匹配】答案的玩家获得 {self.score_correct} 分，"
             f"作画者获得 {self.score_drawer} 分；\n"
             f"   · 作画 {self.draw_timeout}s / 竞猜 {self.guess_timeout}s 超时则跳过该轮。\n"
@@ -807,10 +850,16 @@ class DrawAndGuessPlugin(Star):
             return
 
         guess_norm = normalize_answer(text)
-        if not guess_norm or guess_norm != room.normalized_answer:
+        if not guess_norm:
             return
 
-        # 命中：抢一把锁，确保只有第一个生效
+        # 猜错：贴 ❌ 表情反馈
+        if guess_norm != room.normalized_answer:
+            await self._react(event, EMOJI_WRONG)
+            return
+
+        # 命中：贴 ✅ 表情，再抢锁确保只有第一个生效
+        await self._react(event, EMOJI_CORRECT)
         async with room.lock:
             if room.state != RoomState.GUESSING:
                 return
