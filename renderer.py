@@ -106,13 +106,14 @@ class RankRow:
     user_id: str
 
 
-async def _fetch_bytes(url: str, timeout: float = 10.0) -> bytes | None:
+async def _fetch_bytes(
+    session: aiohttp.ClientSession, url: str, timeout: float = 10.0
+) -> bytes | None:
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
-            async with s.get(url) as r:
-                if r.status != 200:
-                    return None
-                return await r.read()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+            if r.status != 200:
+                return None
+            return await r.read()
     except Exception:
         return None
 
@@ -176,13 +177,29 @@ async def render_scoreboard(
     subtitle: str,
     rows: list[RankRow],
 ) -> bytes:
-    """渲染最终积分排行榜，返回 PNG 字节。"""
-    # 异步下载所有头像
-    avatar_bytes_list = await asyncio.gather(
-        *[_fetch_bytes(r.avatar_url) for r in rows],
-        return_exceptions=False,
+    """渲染最终积分排行榜，返回 PNG 字节。
+
+    头像下载（网络 I/O）在协程内完成；图像合成（CPU 密集）通过
+    asyncio.to_thread 分流到线程池，避免阻塞事件循环。
+    """
+    # 复用单一 ClientSession 并发下载所有头像
+    async with aiohttp.ClientSession() as session:
+        avatar_bytes_list = await asyncio.gather(
+            *[_fetch_bytes(session, r.avatar_url) for r in rows],
+            return_exceptions=False,
+        )
+    return await asyncio.to_thread(
+        _compose_scoreboard, title, subtitle, rows, list(avatar_bytes_list)
     )
 
+
+def _compose_scoreboard(
+    title: str,
+    subtitle: str,
+    rows: list[RankRow],
+    avatar_bytes_list: list[bytes | None],
+) -> bytes:
+    """纯 CPU 的排行榜图像合成（在线程池中执行）。"""
     # 布局参数
     width = 900
     pad = 32

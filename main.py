@@ -313,8 +313,10 @@ class DrawAndGuessPlugin(Star):
         )
 
         # 发一张手机比例白板，方便长按 → 编辑 → 涂鸦
+        # 渲染是 CPU 密集任务，丢到线程池执行，避免阻塞事件循环
         try:
-            wb_bytes = render_whiteboard(
+            wb_bytes = await asyncio.to_thread(
+                render_whiteboard,
                 label=f"第 {room.round_index + 1}/{len(room.order)} 轮 · {room.domain}",
             )
             await self._send_group(
@@ -487,10 +489,27 @@ class DrawAndGuessPlugin(Star):
         # 游戏中：把玩家移出。order 列表保持不变以维持轮次稳定，
         # 轮到已退出的玩家时 _begin_round 会因 players 中查不到而自动跳过。
         async with room.lock:
+            was_drawer = uid == room.current_drawer_id
             player = room.players.pop(uid, None)
             room.last_images.pop(uid, None)
             yield event.plain_result(f"👋 {player.name if player else uid} 中途退出。")
-            if uid == room.current_drawer_id and room.state in (RoomState.DRAWING, RoomState.GUESSING):
+
+            # 房间已空 → 自动解散
+            if not room.players:
+                self._cancel_timeout(room)
+                self.rooms.pop(room.group_origin, None)
+                yield event.plain_result("🛑 房间已无玩家，自动解散。")
+                return
+
+            # 退出者是房主 → 转移房主，避免出现无人能解散的「幽灵房间」
+            if uid == room.owner_id:
+                room.owner_id = next(iter(room.players))
+                yield event.plain_result(
+                    f"👑 房主已退出，房主转移给 {room.players[room.owner_id].name}。"
+                )
+
+            # 退出者是当前作画者 → 本轮取消，进入下一轮
+            if was_drawer and room.state in (RoomState.DRAWING, RoomState.GUESSING):
                 self._cancel_timeout(room)
                 await self._send_group(
                     room,
@@ -609,9 +628,13 @@ class DrawAndGuessPlugin(Star):
         if room.state != RoomState.LOBBY:
             yield event.plain_result("⚠️ 游戏已在进行中。")
             return
-        domain = (domain or "").strip()
+        # 领域会拼进 LLM prompt，需限制长度并折叠空白/换行，降低 prompt 注入与 token 浪费风险
+        domain = re.sub(r"\s+", " ", (domain or "").strip())
         if not domain:
             yield event.plain_result("用法：/draw_start <领域>\n例如：/draw_start 动物")
+            return
+        if len(domain) > 20:
+            yield event.plain_result("⚠️ 领域名过长，请控制在 20 字以内。")
             return
         if len(room.players) < self.min_players:
             yield event.plain_result(
