@@ -530,7 +530,7 @@ class DrawAndGuessPlugin(Star):
             f"作画者获得 {self.score_drawer} 分；\n"
             f"   · 作画 {self.draw_timeout}s / 竞猜 {self.guess_timeout}s 超时则跳过该轮。\n"
             "6. 全部回合结束，机器人生成最终积分排行榜图片（头像 + 昵称 + 积分 + 顺位）。\n"
-            "\n【指令】\n"
+            "\n【指令】下划线和空格两种写法等价，如 /draw_join 同 /draw join\n"
             "  /draw_create               创建房间（创建者自动加入）\n"
             "  /draw_join                 加入当前群的房间（大厅阶段）\n"
             "  /draw_leave                退出房间（房主退出则解散）\n"
@@ -694,6 +694,76 @@ class DrawAndGuessPlugin(Star):
             remaining = max(0, int(room.round_deadline - time.time()))
             bits.append(f"剩余 {remaining} 秒")
         yield event.plain_result(" · ".join(bits))
+
+    # ------------------------- 空格写法的指令组 -------------------------
+    # 让 `/draw join` 这种空格写法等价于 `/draw_join`。
+    # 子指令仅做转发，逻辑全部复用上面的 cmd_* 处理器。
+
+    @filter.command_group("draw")
+    def draw_group(self):
+        """你画我猜命令组：
+        create  创建房间
+        join    加入房间
+        leave   退出房间
+        list    查看房间
+        disband 解散房间
+        start   开始游戏（带领域）
+        submit  提交画作
+        skip    跳过本轮
+        status  查看进度
+        help    显示帮助
+        """
+        pass
+
+    @draw_group.command("create")
+    async def g_create(self, event: AstrMessageEvent):
+        async for r in self.cmd_create(event):
+            yield r
+
+    @draw_group.command("join")
+    async def g_join(self, event: AstrMessageEvent):
+        async for r in self.cmd_join(event):
+            yield r
+
+    @draw_group.command("leave")
+    async def g_leave(self, event: AstrMessageEvent):
+        async for r in self.cmd_leave(event):
+            yield r
+
+    @draw_group.command("list")
+    async def g_list(self, event: AstrMessageEvent):
+        async for r in self.cmd_list(event):
+            yield r
+
+    @draw_group.command("disband")
+    async def g_disband(self, event: AstrMessageEvent):
+        async for r in self.cmd_disband(event):
+            yield r
+
+    @draw_group.command("start")
+    async def g_start(self, event: AstrMessageEvent, domain: str = ""):
+        async for r in self.cmd_start(event, domain):
+            yield r
+
+    @draw_group.command("submit")
+    async def g_submit(self, event: AstrMessageEvent):
+        async for r in self.cmd_submit(event):
+            yield r
+
+    @draw_group.command("skip")
+    async def g_skip(self, event: AstrMessageEvent):
+        async for r in self.cmd_skip(event):
+            yield r
+
+    @draw_group.command("status")
+    async def g_status(self, event: AstrMessageEvent):
+        async for r in self.cmd_status(event):
+            yield r
+
+    @draw_group.command("help")
+    async def g_help(self, event: AstrMessageEvent):
+        async for r in self.cmd_help(event):
+            yield r
 
     # ------------------------- 竞猜捕捉 -------------------------
 
